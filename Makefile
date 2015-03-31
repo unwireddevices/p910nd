@@ -43,7 +43,7 @@ define Package/p910nd/description
 endef
 
 MAKE_FLAGS += \
-	CFLAGS="$(TARGET_CFLAGS) -DLOCKFILE_DIR=\"\\\"/tmp\"\\\""
+	CFLAGS="$(TARGET_CFLAGS) -lpthread -DLOCKFILE_DIR=\"\\\"/tmp\"\\\""
 
 define Package/p910nd/install
 	$(INSTALL_DIR) $(1)/usr/sbin
