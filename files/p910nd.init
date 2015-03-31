@@ -28,6 +28,7 @@ start_service() {
 	append_string "$section" device "-f "
 	append_string "$section" bind "-i "
 	append_string "$section" gpio "-g "
+	append_string "$section" timeout "-t "
 	append_string "$section" port ""
 	config_get_bool "enabled" "$section" "enabled" '1'
 	[ "$enabled" -gt 0 ] && /usr/sbin/p910nd $args
