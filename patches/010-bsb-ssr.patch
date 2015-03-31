@@ -1,0 +1,188 @@
+Index: p910nd-0.95/p910nd.c
+===================================================================
+--- p910nd-0.95.orig/p910nd.c
++++ p910nd-0.95/p910nd.c
+@@ -16,6 +16,10 @@
+  *	Port 9100+n will then be passively opened
+  *	n defaults to 0
+  *
++ *	Version 0.95bsb
++ *	Patch by Oleg Artamonov
++ *	Printer power control with GPIO
++ *
+  *	Version 0.95
+  *	Patch by Mario Izquierdo
+  *	Fix incomplete conversion to manipulate new ip_addr structure
+@@ -110,6 +114,7 @@
+ #include	<sys/socket.h>
+ #include	<netinet/in.h>
+ #include	<arpa/inet.h>
++#include	<pthread.h>
+ 
+ #ifdef	USE_LIBWRAP
+ #include	"tcpd.h"
+@@ -147,13 +152,65 @@ typedef struct {
+ } Buffer_t;
+ 
+ static char *progname;
+-static char version[] = "Version 0.94";
++static char version[] = "Version 0.95bsb";
+ static char copyright[] = "Copyright (c) 2008 Ken Yap, GPLv2";
+ static int lockfd = -1;
+ static char *device = 0;
+ static int bidir = 0;
+ static char *bindaddr = 0;
++static int gpioNum = -1;
++static pthread_t threadId;
+ 
++/* GPIO access functions */
++void gpioExport(int gpio)
++{
++    int fd;
++    char buf[255];
++    fd = open("/sys/class/gpio/export", O_WRONLY);
++    sprintf(buf, "%d", gpio); 
++    write(fd, buf, strlen(buf));
++    close(fd);
++}
++
++void gpioDirection(int gpio, int direction) // 1 for output, 0 for input
++{
++	int fd;
++	char buf[255];
++    sprintf(buf, "/sys/class/gpio/gpio%d/direction", gpio);
++    fd = open(buf, O_WRONLY);
++
++    if (direction)
++    {
++        write(fd, "out", 3);
++    }
++    else
++    {
++        write(fd, "in", 2);
++    }
++    close(fd);
++}
++
++void gpioSet(int gpio, int value)
++{
++	int fd;
++	char buf[255];
++    sprintf(buf, "/sys/class/gpio/gpio%d/value", gpio);
++    fd = open(buf, O_WRONLY);
++    sprintf(buf, "%d", value);
++    write(fd, buf, 1);
++    close(fd);
++}
++
++/* Function to power off the printer after some timeout */
++void *printerOff(void *arg) {
++	time_t now = time(NULL);
++	do {
++		// nothing to do here actually
++		sleep(1);
++	} while (difftime(time(NULL), now) < 300); // 5 minutes
++	
++	gpioSet(gpioNum, 0);
++}
+ 
+ /* Helper function: convert a struct sockaddr address (IPv4 and IPv6) to a string */
+ char *get_ip_str(const struct sockaddr *sa, char *s, size_t maxlen)
+@@ -191,7 +248,7 @@ uint16_t get_port(const struct sockaddr 
+ void usage(void)
+ {
+ 	fprintf(stderr, "%s %s %s\n", progname, version, copyright);
+-	fprintf(stderr, "Usage: %s [-f device] [-i bindaddr] [-bv] [0|1|2]\n", progname);
++	fprintf(stderr, "Usage: %s [-f device] [-i bindaddr] [-g GPIO] [-bv] [0|1|2]\n", progname);
+ 	exit(1);
+ }
+ 
+@@ -587,6 +644,19 @@ void server(int lpnumber)
+ #endif
+ 		syslog(LOG_NOTICE, "Connection from %s port %hu accepted\n", get_ip_str((struct sockaddr *)&client, host, sizeof(host)), get_port((struct sockaddr *)&client));
+ 		/*write(fd, "Printing", 8); */
++			
++		/* Turn the printer on */
++		if (gpioNum >= 0)
++		{
++			/* Prevent the printer from turning off if it is already powered */
++			if (threadId)
++			{
++				pthread_cancel(threadId);
++			}
++			
++			/* Turn on */
++			gpioSet(gpioNum, 1);
++		}
+ 
+ 		/* Make sure lp device is open... */
+ 		while ((lp = open_printer(lpnumber)) == -1)
+@@ -596,6 +666,12 @@ void server(int lpnumber)
+ 			syslog(LOGOPTS, "copy_stream: %m\n");
+ 		(void)close(fd);
+ 		(void)close(lp);
++		
++		/* Turn the printer off after some interval */
++		if (gpioNum >=0)
++		{
++			pthread_create(&threadId, NULL, printerOff, NULL);
++		}
+ 	}
+ 	syslog(LOGOPTS, "accept: %m\n");
+ 	free_lock();
+@@ -635,7 +711,7 @@ int main(int argc, char *argv[])
+ 			progname = p + 1;
+ 	}
+ 	lpnumber = '0';
+-	while ((c = getopt(argc, argv, "bi:f:v")) != EOF) {
++	while ((c = getopt(argc, argv, "bi:f:g:v")) != EOF) {
+ 		switch (c) {
+ 		case 'b':
+ 			bidir = 1;
+@@ -646,6 +722,9 @@ int main(int argc, char *argv[])
+ 		case 'i':
+ 			bindaddr = optarg;
+ 			break;
++		case 'g':
++			gpioNum = atoi(optarg);
++			break;
+ 		case 'v':
+ 			show_version();
+ 			break;
+@@ -660,6 +739,15 @@ int main(int argc, char *argv[])
+ 		if (isdigit(argv[0][0]))
+ 			lpnumber = argv[0][0];
+ 	}
++	
++	/* If GPIO number was given, initialize GPIO access and switch GPIO to 0 */
++	if (gpioNum >= 0)
++	{
++		gpioExport(gpioNum);
++		gpioDirection(gpioNum, 1);
++		gpioSet(gpioNum, 0);
++	}
++	
+ 	/* change the n in argv[0] to match the port so ps will show that */
+ 	if ((p = strstr(progname, "p910n")) != NULL)
+ 		p[4] = lpnumber;
+Index: p910nd-0.95/Makefile
+===================================================================
+--- p910nd-0.95.orig/Makefile
++++ p910nd-0.95/Makefile
+@@ -14,7 +14,7 @@ CROSS = 
+ CC = $(CROSS)gcc
+ STRIP = $(CROSS)strip
+ 
+-CFLAGS += -O2  -Wall
++CFLAGS += -O2 -Wall -lpthread
+ 
+ PROG = p910nd
+ CONFIG = p910nd.conf
+@@ -25,6 +25,7 @@ BINDIR = /usr/sbin
+ CONFIGDIR = /etc/sysconfig
+ SCRIPTDIR = /etc/init.d
+ MANDIR = /usr/share/man/man8
++DEPENDS = libpthread
+ 
+ $(PROG):	p910nd.c
+ 	$(CC) -o $@ $^ $(CFLAGS) $(DEFINES) $(LIBS)
