@@ -11,3 +11,7 @@ Corresponding /etc/config/p910nd.conf options:<br />
 *timeout &lt;seconds&gt;*
 
 Every new job resets the timeout counter.
+
+Usage example: http://www.black-swift.com/wiki/index.php?title=Wireless_Print_Server
+
+Precompiled binary for OpenWRT 14.07, ar71x target architecture: http://files.black-swift.com/files/misc/p910nd_0.95-3-bsb1_ar71xx.ipk
